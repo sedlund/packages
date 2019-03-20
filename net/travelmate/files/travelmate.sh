@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/ash
 # travelmate, a wlan connection manager for travel router
 # written by Dirk Brenken (dev@brenken.org)
 
@@ -21,6 +21,7 @@ trm_minquality=35
 trm_maxretry=3
 trm_maxwait=30
 trm_timeout=60
+trm_iface=""
 trm_radio=""
 trm_connection=""
 trm_rtfile="/tmp/trm_runtime.json"
@@ -45,7 +46,7 @@ f_trim()
 #
 f_envload()
 {
-	local sys_call sys_desc sys_model sys_ver
+	local sys_call sys_desc sys_model trm_sysver
 
 	# get system information
 	#
@@ -101,14 +102,15 @@ f_envload()
 #
 f_prep()
 {
+	local mode network radio disabled eaptype
 	local eap_rc=0 config="${1}" proactive="${2}"
-	local mode="$(uci_get wireless "${config}" mode)"
-	local network="$(uci_get wireless "${config}" network)"
-	local radio="$(uci_get wireless "${config}" device)"
-	local disabled="$(uci_get wireless "${config}" disabled)"
-	local eaptype="$(uci_get wireless "${config}" eap_type)"
+	mode="$(uci_get wireless "${config}" mode)"
+	network="$(uci_get wireless "${config}" network)"
+	radio="$(uci_get wireless "${config}" device)"
+	disabled="$(uci_get wireless "${config}" disabled)"
+	eaptype="$(uci_get wireless "${config}" eap_type)"
 
-	if [ -z "${trm_radio}" ] && [ -z "$(printf "%s" "${trm_radiolist}" | grep -Fo "${radio}")" ]
+	if [ -z "${trm_radio}" ] && ! printf "%s" "${trm_radiolist}" | grep -qFo "${radio}"
 	then
 		trm_radiolist="$(f_trim "${trm_radiolist} ${radio}")"
 	elif [ -n "${trm_radio}" ] && [ -z "${trm_radiolist}" ]
@@ -118,10 +120,10 @@ f_prep()
 	fi
 	if [ "${mode}" = "sta" ] && [ "${network}" = "${trm_iface}" ]
 	then
-		if ([ -z "${disabled}" ] || [ "${disabled}" = "0" ]) && ([ ${proactive} -eq 0 ] || [ "${trm_ifstatus}" != "true" ])
+		if ([ -z "${disabled}" ] || [ "${disabled}" = "0" ]) && ([ "${proactive}" -eq 0 ] || [ "${trm_ifstatus}" != "true" ])
 		then
 			uci_set wireless "${config}" disabled 1
-		elif [ "${disabled}" = "0" ] && [ "${trm_ifstatus}" = "true" ] && [ -z "${trm_active_sta}" ] && [ ${proactive} -eq 1 ]
+		elif [ "${disabled}" = "0" ] && [ "${trm_ifstatus}" = "true" ] && [ -z "${trm_active_sta}" ] && [ "${proactive}" -eq 1 ]
 		then
 			trm_active_sta="${config}"
 		fi
@@ -129,7 +131,7 @@ f_prep()
 		then
 			eap_rc="$("${trm_wpa}" -veap >/dev/null 2>&1; printf "%u" ${?})"
 		fi
-		if [ -z "${eaptype}" ] || [ ${eap_rc} -eq 0 ]
+		if [ -z "${eaptype}" ] || [ "${eap_rc}" -eq 0 ]
 		then
 			trm_stalist="$(f_trim "${trm_stalist} ${config}-${radio}")"
 		fi
@@ -168,7 +170,7 @@ f_check()
 				for radio in ${trm_radiolist}
 				do
 					result="$(printf "%s" "${dev_status}" | jsonfilter -l1 -e "@.${radio}.up")"
-					if [ "${result}" = "true" ] && [ -z "$(printf "%s" "${trm_devlist}" | grep -Fo "${radio}")" ]
+					if [ "${result}" = "true" ] && ! printf "%s" "${trm_devlist}" | grep -qFo "${radio}"
 					then
 						trm_devlist="$(f_trim "${trm_devlist} ${radio}")"
 					fi
@@ -182,18 +184,18 @@ f_check()
 				fi
 			elif [ "${mode}" = "rev" ]
 			then
-				wait=$(( ${trm_maxwait} / 3 ))
+				wait=$(( trm_maxwait / 3 ))
 				sleep ${wait}
 				break
 			else
 				ifname="$(printf "%s" "${dev_status}" | jsonfilter -l1 -e '@.*.interfaces[@.config.mode="sta"].ifname')"
 				if [ -n "${ifname}" ]
 				then
-					trm_ifquality="$(${trm_iwinfo} ${ifname} info 2>/dev/null | awk -F "[\/| ]" '/Link Quality:/{printf "%i\n", (100 / $NF * $(NF-1)) }')"
-					if [ ${trm_ifquality} -ge ${trm_minquality} ]
+					trm_ifquality="$(${trm_iwinfo} "${ifname}" info 2>/dev/null | awk -F "[\/| ]" '/Link Quality:/{printf "%i\n", (100 / $NF * $(NF-1)) }')"
+					if [ "${trm_ifquality}" -ge "${trm_minquality}" ]
 					then
 						trm_ifstatus="$(ubus -S call network.interface dump 2>/dev/null | jsonfilter -l1 -e "@.interface[@.device=\"${ifname}\"].up")"
-					elif [ "${mode}" = "initial" ] && [ ${trm_ifquality} -lt ${trm_minquality} ]
+					elif [ "${mode}" = "initial" ] && [ "${trm_ifquality}" -lt "${trm_minquality}" ]
 					then
 						trm_ifstatus="${status}"
 						sta_essid="$(printf "%s" "${dev_status}" | jsonfilter -l1 -e '@.*.interfaces[@.config.mode="sta"].*.ssid')"
@@ -206,13 +208,13 @@ f_check()
 			then
 				if ([ "${trm_ifstatus}" != "true" ] && [ "${trm_ifstatus}" != "${status}" ]) || \
 					([ "${trm_ifstatus}" = "true" ] && [ "${mode}" = "sta" ] && [ -n "${trm_active_sta}" ]) || \
-					[ ${trm_ifquality} -lt ${trm_minquality} ]
+					[ "${trm_ifquality}" -lt "${trm_minquality}" ]
 				then
 					f_jsnup
 				fi
 				if [ "${mode}" = "initial" ] && [ ${trm_captive} -eq 1 ] && [ "${trm_ifstatus}" = "true" ]
 				then
-					result="$(${trm_fetch} --timeout=$(( ${trm_maxwait} / 3 )) "${trm_captiveurl}" -O /dev/null 2>&1 | \
+					result="$(${trm_fetch} --timeout=$(( trm_maxwait / 3 )) "${trm_captiveurl}" -O /dev/null 2>&1 | \
 						awk '/^Redirected/{printf "%s" "net cp \047"$NF"\047";exit}/^Download completed/{printf "%s" "net ok";exit}/^Failed|^Connection error/{printf "%s" "net nok";exit}')"
 					if [ -n "${result}" ] && ([ -z "${trm_connection}" ] || [ "${result}" != "${trm_connection%/*}" ])
 					then
@@ -259,7 +261,7 @@ f_jsnup()
 	json_get_var faulty_list "faulty_stations"
 	if [ -n "${faulty_station}" ]
 	then
-		if [ -z "$(printf "%s" "${faulty_list}" | grep -Fo "${faulty_station}")" ]
+		if ! printf "%s" "${faulty_list}" | grep -qFo "${faulty_station}"
 		then
 			faulty_list="$(f_trim "${faulty_list} ${faulty_station}")"
 		fi
@@ -310,6 +312,7 @@ f_main()
 		config_foreach f_prep wifi-iface ${trm_proactive}
 		if [ "${trm_ifstatus}" = "true" ] && [ ${trm_proactive} -eq 1 ]
 		then
+			local station_id
 			json_get_var station_id "station_id"
 			active_radio="${station_id%%/*}"
 			active_essid="${station_id%/*}"
@@ -325,7 +328,7 @@ f_main()
 		for dev in ${trm_devlist}
 		do
 			f_log "debug" "f_main ::: device: ${dev}"
-			if [ -z "$(printf "%s" "${trm_stalist}" | grep -o "\-${dev}")" ]
+			if ! printf "%s" "${trm_stalist}" | grep -o "\-${dev}"
 			then
 				f_log "debug" "f_main ::: no station on '${dev}' - continue"
 				continue
@@ -342,7 +345,7 @@ f_main()
 					sta_bssid="$(uci_get wireless "${config}" bssid)"
 					sta_iface="$(uci_get wireless "${config}" network)"
 					json_get_var faulty_list "faulty_stations"
-					if [ -n "$(printf "%s" "${faulty_list}" | grep -Fo "${sta_radio}/${sta_essid}/${sta_bssid}")" ]
+					if printf "%s" "${faulty_list}" | grep -qFo "${sta_radio}/${sta_essid}/${sta_bssid}"
 					then
 						f_log "debug" "f_main ::: faulty station '${sta_radio}/${sta_essid}/${sta_bssid:-"-"}' - continue"
 						continue
@@ -355,8 +358,8 @@ f_main()
 					if [ -z "${scan_list}" ]
 					then
 						scan_list="$(f_trim "$("${trm_iwinfo}" "${dev}" scan 2>/dev/null | \
-							awk 'BEGIN{FS="[/ ]"}/Address:/{var1=$NF}/ESSID:/{var2="";for(i=12;i<=NF;i++) \
-							if(var2==""){var2=$i}else{var2=var2" "$i}}/Quality:/{printf "%i,%s,%s\n",(100/$NF*$(NF-1)),var1,var2}' | \
+							awk 'BEGIN{FS="[/ ]"}/Address:/{var1=$NF}/ESSID:/{var2="";for(i=12;i<=NF;i++) ' \
+							'if(var2==""){var2=$i}else{var2=var2" "$i}}/Quality:/{printf "%i,%s,%s\n",(100/$NF*$(NF-1)),var1,var2}' | \
 							sort -rn | awk '{ORS=",";print $0}')")"
 						f_log "debug" "f_main ::: scan_list: ${scan_list:0:800}"
 						if [ -z "${scan_list}" ]
@@ -380,9 +383,9 @@ f_main()
 						fi
 						if [ -n "${scan_quality}" ] && [ -n "${scan_bssid}" ] && [ -n "${scan_essid}" ]
 						then
-							if [ ${scan_quality} -ge ${trm_minquality} ]
+							if [ "${scan_quality}" -ge "${trm_minquality}" ]
 							then
-								if (([ "${scan_essid}" = "\"${sta_essid}\"" ] && ([ -z "${sta_bssid}" ] || [ "${scan_bssid}" = "${sta_bssid}" ])) || \
+								if ( ([ "${scan_essid}" = "\"${sta_essid}\"" ] && ([ -z "${sta_bssid}" ] || [ "${scan_bssid}" = "${sta_bssid}" ]) ) || \
 									([ "${scan_bssid}" = "${sta_bssid}" ] && [ "${scan_essid}" = "unknown" ])) && [ "${dev}" = "${sta_radio}" ]
 								then
 									f_log "debug" "f_main ::: scan_quality: ${scan_quality}, sta_bssid: ${sta_bssid}, scan_bssid: ${scan_bssid}, sta_essid: \"${sta_essid}\", scan_essid: ${scan_essid}"
@@ -427,7 +430,7 @@ f_main()
 					unset IFS scan_quality scan_bssid scan_essid
 				done
 				cnt=$(( cnt + 1 ))
-				sleep $(( ${trm_maxwait} / 6 ))
+				sleep $(( trm_maxwait / 6 ))
 			done
 			unset scan_list
 		done
@@ -447,10 +450,9 @@ fi
 # initialize json runtime file
 #
 json_load_file "${trm_rtfile}" >/dev/null 2>&1
-json_select data >/dev/null 2>&1
-if [ ${?} -ne 0 ]
+if ! json_select data >/dev/null 2>&1
 then
-	> "${trm_rtfile}"
+	true > "${trm_rtfile}"
 	json_init
 	json_add_object "data"
 fi
@@ -464,7 +466,7 @@ do
 		sleep ${trm_timeout}
 	elif [ "${trm_action}" = "stop" ]
 	then
-		> "${trm_rtfile}"
+		true > "${trm_rtfile}"
 		f_log "info" "travelmate instance stopped ::: action: ${trm_action}, pid: $(cat ${trm_pidfile} 2>/dev/null)"
 		exit 0
 	else
